@@ -1,39 +1,113 @@
+require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs").promises;
-const { convertHeicToJpg } = require("./heicConvert");
+const { convertHeicToJpg } = require("./heicconvert");
 
 const app = express();
-const port = 3001;
+const port = process.env.PORT || 3001;
 
-// Middlewares
-app.use(cors());
+const allowedOrigins = [
+  "http://localhost:5173", // Development
+  "https://dropheic-woad.vercel.app", // Production
+  "https://dropheic-woad.vercel.app/", // Production with trailing slash
+];
 
-// Create directories if they don't exist
-const uploadDir = path.join(__dirname, "uploads");
-const convertedDir = path.join(__dirname, "converted");
+// Helper function for persistent paths
+const getPersistentPath = (relativePath) => {
+  const basePath = process.env.RENDER_MOUNT_DIR || __dirname;
+  return path.join(basePath, relativePath);
+};
+
+// Updated directory paths for Render
+const uploadDir = getPersistentPath("uploads");
+const convertedDir = getPersistentPath("converted");
+
+// Updated CORS for production
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+
+      if (
+        allowedOrigins.indexOf(origin) !== -1 ||
+        process.env.NODE_ENV === "development"
+      ) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+const getConfig = () => ({
+  isDevelopment: process.env.NODE_ENV === "development",
+  isProduction: process.env.NODE_ENV === "production",
+  frontendUrl: process.env.FRONTEND_URL,
+  port: process.env.PORT || 3001,
+  maxFileSize: process.env.MAX_FILE_SIZE || 10 * 1024 * 1024, // 10MB default
+});
 
 // Ensure directories exist
 async function initializeDirectories() {
   try {
     await fs.mkdir(uploadDir, { recursive: true });
     await fs.mkdir(convertedDir, { recursive: true });
-    console.log("Directories initialized successfully");
+    console.log("Directories initialized successfully:", {
+      uploadDir,
+      convertedDir,
+    });
   } catch (error) {
     console.error("Error creating directories:", error);
     process.exit(1);
   }
 }
 
-// Configure multer with error handling
+// Add cleanup routine for temporary files
+async function cleanupOldFiles() {
+  try {
+    const ONE_HOUR = 60 * 60 * 1000;
+
+    // Cleanup uploads directory
+    const uploadFiles = await fs.readdir(uploadDir);
+    for (const file of uploadFiles) {
+      const filePath = path.join(uploadDir, file);
+      const stats = await fs.stat(filePath);
+      if (Date.now() - stats.mtime.getTime() > ONE_HOUR) {
+        await fs.unlink(filePath);
+      }
+    }
+
+    // Cleanup converted directory
+    const convertedFiles = await fs.readdir(convertedDir);
+    for (const file of convertedFiles) {
+      const filePath = path.join(convertedDir, file);
+      const stats = await fs.stat(filePath);
+      if (Date.now() - stats.mtime.getTime() > ONE_HOUR) {
+        await fs.unlink(filePath);
+      }
+    }
+  } catch (error) {
+    console.error("Cleanup error:", error);
+  }
+}
+
+// Run cleanup every hour
+setInterval(cleanupOldFiles, 60 * 60 * 1000);
+
+// Multer configuration
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, uploadDir); // Use the uploadDir constant
+    cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    // Sanitize filename - remove spaces and special characters
     const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "-");
     const fileName = `${Date.now()}-${sanitizedName}`;
     cb(null, fileName);
@@ -44,7 +118,6 @@ const upload = multer({
   storage: storage,
   fileFilter: function (req, file, cb) {
     console.log("Received file:", file.originalname);
-    // Case-insensitive check for HEIC files
     if (/\.(heic|heif)$/i.test(file.originalname)) {
       cb(null, true);
     } else {
@@ -52,11 +125,11 @@ const upload = multer({
     }
   },
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
+    fileSize: 10 * 1024 * 1024,
   },
-}).array("files", 10); // Allow up to 10 files
+}).array("files", 10);
 
-// Serve static files with proper error handling
+// Serve static files
 app.use(
   "/uploads",
   express.static(uploadDir, {
@@ -73,7 +146,7 @@ app.use(
   })
 );
 
-// Convert endpoint with comprehensive error handling
+// Convert endpoint
 app.post("/convert", (req, res) => {
   console.log("Received conversion request");
 
@@ -104,7 +177,7 @@ app.post("/convert", (req, res) => {
       const convertedFiles = [];
       const errors = [];
 
-      // Process files sequentially to avoid overwhelming the system
+      // Process files sequentially
       for (const file of req.files) {
         try {
           console.log(`Processing file: ${file.filename}`);
@@ -134,7 +207,7 @@ app.post("/convert", (req, res) => {
             error: error.message,
           });
 
-          // Attempt to clean up failed file
+          // Clean up failed file
           try {
             await fs.unlink(file.path);
           } catch (cleanupError) {
@@ -161,12 +234,43 @@ app.post("/convert", (req, res) => {
   });
 });
 
-// Health check endpoint
-app.get("/health", (req, res) => {
-  res.json({ status: "healthy" });
+// File check endpoint
+app.get("/check-files", async (req, res) => {
+  try {
+    const [uploadFiles, convertedFiles] = await Promise.all([
+      fs.readdir(uploadDir),
+      fs.readdir(convertedDir),
+    ]);
+
+    res.json({
+      status: "healthy",
+      uploadFiles,
+      convertedFiles,
+      directories: {
+        uploadDir,
+        convertedDir,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: "error",
+      error: error.message,
+    });
+  }
 });
 
-// Generic error handling middleware
+// Health check endpoint
+app.get("/health", (req, res) => {
+  const config = getConfig();
+  res.json({
+    status: "healthy",
+    environment: process.env.NODE_ENV,
+    frontendUrl: config.frontendUrl,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
   res.status(500).json({
@@ -182,7 +286,10 @@ async function startServer() {
     await initializeDirectories();
 
     app.listen(port, () => {
-      console.log(`Server running on http://localhost:${port}`);
+      const config = getConfig();
+      console.log(`Server running on port ${port}`);
+      console.log(`Environment: ${process.env.NODE_ENV}`);
+      console.log(`Frontend URL: ${config.frontendUrl}`);
       console.log(`Upload directory: ${uploadDir}`);
       console.log(`Converted directory: ${convertedDir}`);
     });
