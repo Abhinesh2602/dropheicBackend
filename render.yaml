@@ -3,12 +3,14 @@ services:
     name: dropheic-backend
     env: node
     buildCommand: npm install
-    startCommand: node server.js
+    startCommand: npm start
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PORT
+        value: 3001
       - key: FRONTEND_URL
-        value: https://your-frontend-url.onrender.com # Update this
+        value: https://dropheic-woad.vercel.app
     disk:
       name: uploads-disk
       mountPath: /opt/render/project/src

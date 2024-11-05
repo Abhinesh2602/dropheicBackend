@@ -1,5 +1,6 @@
-require("dotenv").config();
-
+require("dotenv").config({
+  path: process.env.NODE_ENV === "production" ? ".env.production" : ".env",
+});
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -9,6 +10,13 @@ const { convertHeicToJpg } = require("./heicconvert");
 
 const app = express();
 const port = process.env.PORT || 3001;
+
+console.log("Starting server with configuration:", {
+  NODE_ENV: process.env.NODE_ENV,
+  PORT: port,
+  FRONTEND_URL: process.env.FRONTEND_URL,
+  RENDER_MOUNT_DIR: process.env.RENDER_MOUNT_DIR,
+});
 
 const allowedOrigins = [
   "http://localhost:5173", // Development
@@ -285,11 +293,11 @@ async function startServer() {
   try {
     await initializeDirectories();
 
-    app.listen(port, () => {
-      const config = getConfig();
-      console.log(`Server running on port ${port}`);
+    app.listen(port, "0.0.0.0", () => {
+      console.log(`Server started successfully`);
       console.log(`Environment: ${process.env.NODE_ENV}`);
-      console.log(`Frontend URL: ${config.frontendUrl}`);
+      console.log(`Listening on port: ${port}`);
+      console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
       console.log(`Upload directory: ${uploadDir}`);
       console.log(`Converted directory: ${convertedDir}`);
     });
